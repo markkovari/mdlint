@@ -4,6 +4,7 @@ use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use std::{env::args, io::Result, path::Path};
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
+const IGNORED_DIRECTORIES: [&str; 4] = ["archive", "embedded", "embedded-hal", "atmel"];
 
 fn ends_with_extension(path: &str) -> bool {
     EXTENSIONS.iter().any(|ext| path.ends_with(ext))
@@ -59,11 +60,9 @@ async fn main() -> AnyResult<()> {
         if let Ok(file_like) = entry {
             if ends_with_extension(file_like.path().to_str().unwrap()) {
                 let path_of_file = file_like.path().display().to_string();
-                if path_of_file.contains("archive")
-                    || path_of_file.contains("embedded")
-                    || path_of_file.contains("embedded-hal")
-                    || path_of_file.contains("cpp")
-                    || path_of_file.ends_with("atmel-picontrol/README.md")
+                if IGNORED_DIRECTORIES
+                    .iter()
+                    .any(|dir| path_of_file.contains(dir))
                 {
                     continue;
                 }
