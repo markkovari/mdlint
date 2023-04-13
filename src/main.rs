@@ -41,10 +41,13 @@ fn get_document_link(document: &str, path: String) -> Vec<LinkTag> {
     links
 }
 
+//TODO: Add more error handling, since returning with false positives
 async fn ping_external_link(url: &str) -> AnyResult<()> {
-    let resp = reqwest::get(url).await?;
-    resp.error_for_status()?;
-    Ok(())
+    let resp = reqwest::get(url).await?.status();
+    if resp.is_success() {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!("Error: {:?}", resp))
 }
 
 #[tokio::main]

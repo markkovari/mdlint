@@ -18,3 +18,5 @@ try-ca:
     cargo run -- "/Users/markkovari/DEV/projects/teaching-materials/cognitive-apprenticeship"
 try-dojo:
     cargo run -- "/Users/markkovari/DEV/projects/teaching-materials/dojo"
+try-iw:
+    cargo run -- "/Users/markkovari/DEV/projects/teaching-materials/interview"
