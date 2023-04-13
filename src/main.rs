@@ -1,6 +1,7 @@
+use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
-use std::{env::args, io::Result};
+use std::{env::args, io::Result, path::Path};
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
 
@@ -8,11 +9,28 @@ fn ends_with_extension(path: &str) -> bool {
     EXTENSIONS.iter().any(|ext| path.ends_with(ext))
 }
 
-fn get_document_link(document: &str) -> Vec<(String, String)> {
-    let mut links: Vec<(String, String)> = Vec::new();
+#[derive(Debug)]
+struct LinkTag {
+    url: String,
+    title: String,
+    path: String,
+}
+
+impl LinkTag {
+    fn new(url: String, title: String, path: String) -> Self {
+        Self { url, title, path }
+    }
+}
+
+fn get_document_link(document: &str, path: String) -> Vec<LinkTag> {
+    let mut links: Vec<LinkTag> = Vec::new();
     let parser = Parser::new_ext(document, Options::empty()).map(|event| match event {
         Event::Start(Tag::Link(a, url, title)) => {
-            links.push((url.to_string(), title.to_string()));
+            links.push(LinkTag::new(
+                url.to_string(),
+                title.to_string(),
+                path.to_owned(),
+            ));
             Event::Start(Tag::Link(a, url, title))
         }
         _ => event,
@@ -22,7 +40,15 @@ fn get_document_link(document: &str) -> Vec<(String, String)> {
     links
 }
 
-fn main() -> Result<()> {
+async fn ping_external_link(url: &str) -> AnyResult<()> {
+    let resp = reqwest::get(url).await?;
+    resp.error_for_status()?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> AnyResult<()> {
+    let mut dead_external_links: Vec<String> = Vec::new();
     let path = args()
         .skip(1)
         .take(1)
@@ -30,15 +56,39 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "./tests".to_string());
 
     for entry in WalkDir::new(path).sort(true) {
-        if let Ok(entry) = entry {
-            if ends_with_extension(entry.path().to_str().unwrap()) {
-                println!("{}", entry.path().display());
-                let file_content = std::fs::read_to_string(entry.path())?;
-                for link in get_document_link(&file_content) {
-                    println!("Link: {:?}", link);
+        if let Ok(file_like) = entry {
+            if ends_with_extension(file_like.path().to_str().unwrap()) {
+                let path_of_file = file_like.path().display().to_string();
+                if path_of_file.contains("archive")
+                    || path_of_file.contains("embedded")
+                    || path_of_file.contains("embedded-hal")
+                    || path_of_file.contains("cpp")
+                    || path_of_file.ends_with("atmel-picontrol/README.md")
+                {
+                    continue;
+                }
+                println!("Checking: {:?}", file_like.path());
+                let file_content = std::fs::read_to_string(file_like.path())?;
+                for link in get_document_link(
+                    &file_content,
+                    file_like.path().to_owned().display().to_string(),
+                ) {
+                    if (link.url.starts_with("http://") || link.url.starts_with("https://"))
+                        && !link.url.contains("localhost")
+                    {
+                        match ping_external_link(&link.url).await {
+                            Err(_) => {
+                                dead_external_links.push(link.url.to_owned());
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
+    }
+    for dead_link in dead_external_links {
+        println!("Dead link: {:?}", dead_link);
     }
     Ok(())
 }
