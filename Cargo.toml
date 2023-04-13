@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 comrak = "0.18.0"
 jwalk = "0.8.1"
+pulldown-cmark = "0.9.2"
