@@ -9,3 +9,8 @@ release-wasm:
 
 copy-wasm:
     cp target/wasm32-unknown-unknown/release/mdlint.wasm mdlint.wasm
+
+
+##locally
+try:
+    cargo run -- "/Users/markkovari/DEV/projects/teaching-materials"
