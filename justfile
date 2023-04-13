@@ -1,16 +1,5 @@
-build:
-    cargo build
+run:
+    deno run -A index.ts
 
-release:
-    cargo build --release
-
-release-wasm:
-    cargo build --release --target wasm32-unknown-unknown
-
-copy-wasm:
-    cp target/wasm32-unknown-unknown/release/mdlint.wasm mdlint.wasm
-
-
-##locally
-try:
-    cargo run -- "/Users/markkovari/DEV/projects/teaching-materials"
+local:
+    deno run -A index.ts "/Users/markkovari/DEV/projects/teaching-materials"
