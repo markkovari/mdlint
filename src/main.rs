@@ -50,12 +50,16 @@ async fn ping_external_link(url: &str) -> AnyResult<()> {
 #[tokio::main]
 async fn main() -> AnyResult<()> {
     let mut dead_external_links: Vec<String> = Vec::new();
+    let mut dead_internal_links: Vec<String> = Vec::new();
     let path = args()
         .skip(1)
         .take(1)
         .next()
         .unwrap_or_else(|| "./tests".to_string());
 
+    let FORBIDDEN_LINK_PREFIX = std::env::var("FORBIDDEN_LINK_PREFIX").unwrap_or_default();
+
+    println!("FORBIDDEN_LINK_PREFIX: {:?}", FORBIDDEN_LINK_PREFIX);
     for entry in WalkDir::new(path).sort(true) {
         if let Ok(file_like) = entry {
             if ends_with_extension(file_like.path().to_str().unwrap()) {
@@ -72,6 +76,10 @@ async fn main() -> AnyResult<()> {
                     &file_content,
                     file_like.path().to_owned().display().to_string(),
                 ) {
+                    if link.url.starts_with(&FORBIDDEN_LINK_PREFIX) {
+                        dead_internal_links.push(link.url.to_owned());
+                        continue;
+                    }
                     if (link.url.starts_with("http://") || link.url.starts_with("https://"))
                         && !link.url.contains("localhost")
                     {
@@ -87,7 +95,10 @@ async fn main() -> AnyResult<()> {
         }
     }
     for dead_link in dead_external_links {
-        println!("Dead link: {:?}", dead_link);
+        println!("Dead external link: {:?}", dead_link);
+    }
+    for dead_link in dead_internal_links {
+        println!("Dead internal link: {:?}", dead_link);
     }
     Ok(())
 }
