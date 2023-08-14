@@ -1,6 +1,6 @@
 use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
-use log::{debug, error, info, log_enabled, Level};
+use log::{debug, error, info, log_enabled, trace, Level};
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use std::{env::args, fs::File, io::Write, path::Path};
@@ -88,7 +88,7 @@ async fn main() -> AnyResult<()> {
                 let path_of_file = file_like.path().display().to_string();
                 if IGNORED_DIRECTORIES
                     .iter()
-                    .any(|dir| path_of_file.starts_with(dir))
+                    .any(|dir| path_of_file.contains(dir))
                 {
                     info!("Ignoring: {:?}", file_like.path());
                     continue;
@@ -99,6 +99,10 @@ async fn main() -> AnyResult<()> {
                     &file_content,
                     file_like.path().to_owned().display().to_string(),
                 ) {
+                    if link.url.starts_with("#") {
+                        info!("Ignoring fragment: {:?}", link);
+                        continue;
+                    }
                     if link.url.starts_with("..") || link.url.starts_with("/") {
                         match Path::new(&link.url).canonicalize() {
                             Ok(path) => {
