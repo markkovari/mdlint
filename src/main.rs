@@ -1,5 +1,6 @@
 use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
+use log::{debug, error, info, log_enabled, Level};
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use std::{env::args, fs::File, io::Write, path::Path};
@@ -56,6 +57,7 @@ enum LinkCheckError {
 async fn ping_external_link(url: &str) -> std::result::Result<u32, LinkCheckError> {
     let resp = reqwest::get(url).await;
     if let Some(status_code) = resp.as_ref().ok().map(|r| r.status().as_u16()) {
+        info!("Status code: {} of {}", status_code, url);
         return match status_code {
             200..=399 => Ok(status_code as u32),
             _ => Err(LinkCheckError::CannotGetLink),
@@ -66,6 +68,7 @@ async fn ping_external_link(url: &str) -> std::result::Result<u32, LinkCheckErro
 
 #[tokio::main]
 async fn main() -> AnyResult<()> {
+    env_logger::init();
     let mut dead_external_links: Vec<LinkTag> = Vec::new();
     let mut dead_internal_links: Vec<LinkTag> = Vec::new();
     let path = args()
@@ -78,16 +81,19 @@ async fn main() -> AnyResult<()> {
 
     println!("FORBIDDEN_LINK_PREFIX: {:?}", forbidden_link_prefix);
     for entry in WalkDir::new(path).sort(true) {
+        info!("Checking: {:?}", entry);
         if let Ok(file_like) = entry {
+            info!("Checking file: {:?}", file_like);
             if ends_with_extension(file_like.path().to_str().unwrap()) {
                 let path_of_file = file_like.path().display().to_string();
                 if IGNORED_DIRECTORIES
                     .iter()
-                    .any(|dir| path_of_file.contains(dir) || path_of_file.starts_with(dir))
+                    .any(|dir| path_of_file.starts_with(dir))
                 {
+                    info!("Ignoring: {:?}", file_like.path());
                     continue;
                 }
-                println!("Checking: {:?}", file_like.path());
+                info!("Checking: {:?}", file_like.path());
                 let file_content = std::fs::read_to_string(file_like.path())?;
                 for link in get_document_link(
                     &file_content,
@@ -97,10 +103,12 @@ async fn main() -> AnyResult<()> {
                         match Path::new(&link.url).canonicalize() {
                             Ok(path) => {
                                 if !path.exists() {
+                                    error!("Cannot find internal: {:?}", link);
                                     dead_internal_links.push(link);
                                 }
                             }
                             Err(_) => {
+                                error!("Cannot find internal: {:?}", link);
                                 dead_internal_links.push(link);
                             }
                         }
@@ -109,6 +117,7 @@ async fn main() -> AnyResult<()> {
                     {
                         match ping_external_link(&link.url).await {
                             Err(_) => {
+                                error!("Cannot find external: {:?}", link);
                                 dead_external_links.push(link);
                             }
                             _ => {}
