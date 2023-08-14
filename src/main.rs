@@ -3,7 +3,14 @@ use jwalk::WalkDir;
 use log::{error, info};
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
-use std::{env::args, fs::File, io::Write, path::Path};
+use std::{
+    env::args,
+    fs::File,
+    io::Write,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::mpsc;
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
 const IGNORED_DIRECTORIES: [&str; 7] = [
@@ -82,77 +89,93 @@ async fn main() -> AnyResult<()> {
     let forbidden_link_prefix = std::env::var("FORBIDDEN_LINK_PREFIX").unwrap_or_default();
     let current_repo_url = std::env::var("CURRENT_REPO_URL").unwrap_or_default();
     let requires_gh_auth = std::env::var("REQUIRES_GH_AUTH").unwrap_or_default();
+    let mut already_visited = Arc::new(Mutex::new(Vec::<LinkTag>::new()));
 
     println!("FORBIDDEN_LINK_PREFIX: {:?}", forbidden_link_prefix);
-    for entry in WalkDir::new(path).sort(true) {
-        info!("Checking: {:?}", entry);
-        if let Ok(file_like) = entry {
-            info!("Checking file: {:?}", file_like);
-            if ends_with_extension(file_like.path().to_str().unwrap()) {
-                let path_of_file = file_like.path().display().to_string();
-                if IGNORED_DIRECTORIES
-                    .iter()
-                    .any(|dir| path_of_file.contains(dir))
-                {
-                    info!("Ignoring: {:?}", file_like.path());
-                    continue;
-                }
-                info!("Checking: {:?}", file_like.path());
-                let file_content = std::fs::read_to_string(file_like.path())?;
-                for link in get_document_link(
-                    &file_content,
-                    file_like.path().to_owned().display().to_string(),
-                ) {
-                    if link.url.starts_with("#") {
-                        info!("Ignoring fragment: {:?}", link);
-                        continue;
-                    }
-                    if link.url.starts_with(&current_repo_url) {
-                        info!("Ignoring repo relatice link: {:?}", link);
-                        should_be_relative.push(link);
-                        continue;
-                    }
-                    if link.url.starts_with(&requires_gh_auth) {
-                        info!("Ignoring, gh token is needed: {:?}", link);
-                        // should_be_relative.push(link);
-                        continue;
-                    }
-                    if link.url.starts_with("..") || link.url.starts_with("/") {
-                        match Path::new(file_like.file_name())
-                            .join(&link.url)
-                            .canonicalize()
-                        {
-                            Ok(path) => {
-                                if !path.exists() {
-                                    error!("Cannot find internal: {:?}", link);
-                                    dead_internal_links.push(link);
-                                }
-                            }
-                            Err(_) => {
-                                error!("Cannot find internal: {:?}", link);
-                                dead_internal_links.push(link);
-                            }
-                        }
-                    } else if (link.url.starts_with("http://") || link.url.starts_with("https://"))
-                        && !link.url.contains("localhost")
+
+    let (tx, mut rx) = mpsc::channel::<LinkTag>(100);
+    tokio::spawn(async move {
+        for entry in WalkDir::new(path).sort(true) {
+            info!("Checking: {:?}", entry);
+            if let Ok(file_like) = entry {
+                info!("Checking file: {:?}", file_like);
+                if ends_with_extension(file_like.path().to_str().unwrap()) {
+                    let path_of_file = file_like.path().display().to_string();
+                    if IGNORED_DIRECTORIES
+                        .iter()
+                        .any(|dir| path_of_file.contains(dir))
                     {
-                        match ping_external_link(&link.url).await {
-                            Err(_) => {
-                                error!("Cannot find external: {:?}", link);
-                                dead_external_links.push(link);
+                        info!("Ignoring: {:?}", file_like.path());
+                        continue;
+                    }
+                    info!("Checking: {:?}", file_like.path());
+                    if let Ok(file_content) = std::fs::read_to_string(file_like.path()) {
+                        for link in get_document_link(
+                            &file_content,
+                            file_like.path().to_owned().display().to_string(),
+                        ) {
+                            if link.url.starts_with("#") {
+                                info!("Ignoring fragment: {:?}", link);
+                                continue;
                             }
-                            _ => {}
+                            if link.url.starts_with(&current_repo_url) {
+                                info!("Ignoring repo relatice link: {:?}", link);
+                                should_be_relative.push(link);
+                                continue;
+                            }
+                            if link.url.starts_with(&requires_gh_auth) {
+                                info!("Ignoring, gh token is needed: {:?}", link);
+                                // should_be_relative.push(link);
+                                continue;
+                            }
+                            if link.url.starts_with("..") || link.url.starts_with("/") {
+                                match Path::new(file_like.file_name())
+                                    .join(&link.url)
+                                    .canonicalize()
+                                {
+                                    Ok(path) => {
+                                        if !path.exists() {
+                                            error!("Cannot find internal: {:?}", link);
+                                            dead_internal_links.push(link);
+                                        }
+                                    }
+                                    Err(_) => {
+                                        error!("Cannot find internal: {:?}", link);
+                                        dead_internal_links.push(link);
+                                    }
+                                }
+                            } else if (link.url.starts_with("http://")
+                                || link.url.starts_with("https://"))
+                                && !link.url.contains("localhost")
+                            {
+                                tx.send(link.clone()).await.unwrap();
+                            }
                         }
                     }
                 }
             }
         }
+    });
+    while let Some(link) = rx.recv().await {
+        let mut already_visited = already_visited.lock().unwrap();
+        if already_visited.iter().any(|l| l.url == link.url) {
+            continue;
+        }
+        match ping_external_link(&link.url).await {
+            Err(_) => {
+                error!("Cannot find external: {:?}", link);
+                dead_external_links.push(link.clone());
+            }
+            _ => {}
+        }
+        already_visited.push(link);
     }
 
+    let already = already_visited.lock().unwrap();
     let external: serde_json::Value = serde_json::json!({
-        "dead_external_links": dead_external_links,
-        "dead_internal_links": dead_internal_links,
+        "already": already.clone(),
     });
+
     let mut file = File::create("dead_links.json")?;
     file.write_all(external.to_string().as_bytes())?;
     Ok(())
