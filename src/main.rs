@@ -1,16 +1,23 @@
 use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
-use std::{env::args, io::Result, path::Path};
+use std::{env::args, fs::File, io::Write, path::Path};
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const IGNORED_DIRECTORIES: [&str; 4] = ["archive", "embedded", "embedded-hal", "atmel"];
+const IGNORED_DIRECTORIES: [&str; 6] = [
+    "archive",
+    "embedded",
+    "embedded-hal",
+    "atmel",
+    "node_modules",
+    "STM32",
+];
 
 fn ends_with_extension(path: &str) -> bool {
     EXTENSIONS.iter().any(|ext| path.ends_with(ext))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct LinkTag {
     url: String,
     title: String,
@@ -41,20 +48,25 @@ fn get_document_link(document: &str, path: String) -> Vec<LinkTag> {
     links
 }
 
-//TODO: Add more error handling, since returning with false positives
-async fn ping_external_link(url: &str) -> AnyResult<()> {
-    let resp = reqwest::get(url).await?.status();
-    //TODO: not sure if this is the best way to handle this
-    if resp == reqwest::StatusCode::NOT_FOUND {
-        return Err(anyhow::anyhow!("Error: {:?}", resp));
+enum LinkCheckError {
+    CannotGetLink,
+}
+
+async fn ping_external_link(url: &str) -> std::result::Result<u32, LinkCheckError> {
+    let resp = reqwest::get(url).await;
+    if let Some(status_code) = resp.as_ref().ok().map(|r| r.status().as_u16()) {
+        return match status_code {
+            200..=399 => Ok(status_code as u32),
+            _ => Err(LinkCheckError::CannotGetLink),
+        };
     }
-    Ok(())
+    return Err(LinkCheckError::CannotGetLink);
 }
 
 #[tokio::main]
 async fn main() -> AnyResult<()> {
-    let mut dead_external_links: Vec<String> = Vec::new();
-    let mut dead_internal_links: Vec<String> = Vec::new();
+    let mut dead_external_links: Vec<LinkTag> = Vec::new();
+    let mut dead_internal_links: Vec<LinkTag> = Vec::new();
     let path = args()
         .skip(1)
         .take(1)
@@ -70,7 +82,7 @@ async fn main() -> AnyResult<()> {
                 let path_of_file = file_like.path().display().to_string();
                 if IGNORED_DIRECTORIES
                     .iter()
-                    .any(|dir| path_of_file.contains(dir))
+                    .any(|dir| path_of_file.contains(dir) || path_of_file.starts_with(dir))
                 {
                     continue;
                 }
@@ -80,16 +92,23 @@ async fn main() -> AnyResult<()> {
                     &file_content,
                     file_like.path().to_owned().display().to_string(),
                 ) {
-                    if link.url.starts_with(&forbidden_link_prefix) {
-                        dead_internal_links.push(link.url.to_owned());
-                        continue;
-                    }
-                    if (link.url.starts_with("http://") || link.url.starts_with("https://"))
+                    if link.url.starts_with("..") || link.url.starts_with("/") {
+                        match Path::new(&link.url).canonicalize() {
+                            Ok(path) => {
+                                if !path.exists() {
+                                    dead_internal_links.push(link);
+                                }
+                            }
+                            Err(_) => {
+                                dead_internal_links.push(link);
+                            }
+                        }
+                    } else if (link.url.starts_with("http://") || link.url.starts_with("https://"))
                         && !link.url.contains("localhost")
                     {
                         match ping_external_link(&link.url).await {
                             Err(_) => {
-                                dead_external_links.push(link.url.to_owned());
+                                dead_external_links.push(link);
                             }
                             _ => {}
                         }
@@ -98,11 +117,12 @@ async fn main() -> AnyResult<()> {
             }
         }
     }
-    for dead_link in dead_external_links {
-        println!("Dead external link: {:?}", dead_link);
-    }
-    for dead_link in dead_internal_links {
-        println!("Dead internal link: {:?}", dead_link);
-    }
+
+    let external: serde_json::Value = serde_json::json!({
+        "dead_external_links": dead_external_links,
+        "dead_internal_links": dead_internal_links,
+    });
+    let mut file = File::create("dead_links.json")?;
+    file.write_all(external.to_string().as_bytes())?;
     Ok(())
 }
