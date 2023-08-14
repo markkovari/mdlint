@@ -1,6 +1,7 @@
 use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
+use serde::{Deserialize, Serialize};
 use std::{env::args, fs::File, io::Write, path::Path};
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
@@ -17,7 +18,7 @@ fn ends_with_extension(path: &str) -> bool {
     EXTENSIONS.iter().any(|ext| path.ends_with(ext))
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LinkTag {
     url: String,
     title: String,
