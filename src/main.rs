@@ -1,18 +1,19 @@
 use anyhow::Result as AnyResult;
 use jwalk::WalkDir;
-use log::{debug, error, info, log_enabled, trace, Level};
+use log::{error, info};
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use std::{env::args, fs::File, io::Write, path::Path};
 
 const EXTENSIONS: [&str; 2] = ["md", "markdown"];
-const IGNORED_DIRECTORIES: [&str; 6] = [
+const IGNORED_DIRECTORIES: [&str; 7] = [
     "archive",
     "embedded",
     "embedded-hal",
     "atmel",
     "node_modules",
     "STM32",
+    "legacy",
 ];
 
 fn ends_with_extension(path: &str) -> bool {
@@ -71,6 +72,7 @@ async fn main() -> AnyResult<()> {
     env_logger::init();
     let mut dead_external_links: Vec<LinkTag> = Vec::new();
     let mut dead_internal_links: Vec<LinkTag> = Vec::new();
+    let mut should_be_relative: Vec<LinkTag> = Vec::new();
     let path = args()
         .skip(1)
         .take(1)
@@ -78,6 +80,8 @@ async fn main() -> AnyResult<()> {
         .unwrap_or_else(|| "./tests".to_string());
 
     let forbidden_link_prefix = std::env::var("FORBIDDEN_LINK_PREFIX").unwrap_or_default();
+    let current_repo_url = std::env::var("CURRENT_REPO_URL").unwrap_or_default();
+    let requires_gh_auth = std::env::var("REQUIRES_GH_AUTH").unwrap_or_default();
 
     println!("FORBIDDEN_LINK_PREFIX: {:?}", forbidden_link_prefix);
     for entry in WalkDir::new(path).sort(true) {
@@ -103,8 +107,21 @@ async fn main() -> AnyResult<()> {
                         info!("Ignoring fragment: {:?}", link);
                         continue;
                     }
+                    if link.url.starts_with(&current_repo_url) {
+                        info!("Ignoring repo relatice link: {:?}", link);
+                        should_be_relative.push(link);
+                        continue;
+                    }
+                    if link.url.starts_with(&requires_gh_auth) {
+                        info!("Ignoring, gh token is needed: {:?}", link);
+                        // should_be_relative.push(link);
+                        continue;
+                    }
                     if link.url.starts_with("..") || link.url.starts_with("/") {
-                        match Path::new(&link.url).canonicalize() {
+                        match Path::new(file_like.file_name())
+                            .join(&link.url)
+                            .canonicalize()
+                        {
                             Ok(path) => {
                                 if !path.exists() {
                                     error!("Cannot find internal: {:?}", link);
